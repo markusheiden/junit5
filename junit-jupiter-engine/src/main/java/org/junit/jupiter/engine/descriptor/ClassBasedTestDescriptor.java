@@ -42,6 +42,7 @@ import org.junit.jupiter.api.extension.ExtensionConfigurationException;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.InvocationInterceptor;
 import org.junit.jupiter.api.extension.LifecycleMethodExecutionExceptionHandler;
+import org.junit.jupiter.api.extension.TestClassLoader;
 import org.junit.jupiter.api.extension.TestInstanceFactory;
 import org.junit.jupiter.api.extension.TestInstanceFactoryContext;
 import org.junit.jupiter.api.extension.TestInstancePostProcessor;
@@ -84,29 +85,30 @@ public abstract class ClassBasedTestDescriptor extends JupiterTestDescriptor {
 
 	private static final ExecutableInvoker executableInvoker = new ExecutableInvoker();
 
-	private final Class<?> testClass;
+	private final Class<?> originTestClass;
 	protected final Set<TestTag> tags;
 	protected final Lifecycle lifecycle;
 
 	private ExecutionMode defaultChildExecutionMode;
+	private Class<?> testClass;
 	private TestInstanceFactory testInstanceFactory;
 	private List<Method> beforeAllMethods;
 	private List<Method> afterAllMethods;
 
-	ClassBasedTestDescriptor(UniqueId uniqueId, Class<?> testClass, Supplier<String> displayNameSupplier,
+	ClassBasedTestDescriptor(UniqueId uniqueId, Class<?> originTestClass, Supplier<String> displayNameSupplier,
 			JupiterConfiguration configuration) {
-		super(uniqueId, testClass, displayNameSupplier, ClassSource.from(testClass), configuration);
+		super(uniqueId, originTestClass, displayNameSupplier, ClassSource.from(originTestClass), configuration);
 
-		this.testClass = testClass;
-		this.tags = getTags(testClass);
-		this.lifecycle = getTestInstanceLifecycle(testClass, configuration);
+		this.originTestClass = originTestClass;
+		this.tags = getTags(originTestClass);
+		this.lifecycle = getTestInstanceLifecycle(originTestClass, configuration);
 		this.defaultChildExecutionMode = (this.lifecycle == Lifecycle.PER_CLASS ? ExecutionMode.SAME_THREAD : null);
 	}
 
 	// --- TestDescriptor ------------------------------------------------------
 
 	public final Class<?> getTestClass() {
-		return this.testClass;
+		return this.testClass != null ? this.testClass : this.originTestClass;
 	}
 
 	public abstract List<Class<?>> getEnclosingTestClasses();
@@ -118,7 +120,7 @@ public abstract class ClassBasedTestDescriptor extends JupiterTestDescriptor {
 
 	@Override
 	public String getLegacyReportingName() {
-		return this.testClass.getName();
+		return this.originTestClass.getName();
 	}
 
 	// --- Node ----------------------------------------------------------------
@@ -145,7 +147,11 @@ public abstract class ClassBasedTestDescriptor extends JupiterTestDescriptor {
 	@Override
 	public JupiterEngineExecutionContext prepare(JupiterEngineExecutionContext context) {
 		MutableExtensionRegistry registry = populateNewExtensionRegistryFromExtendWithAnnotation(
-			context.getExtensionRegistry(), this.testClass);
+			context.getExtensionRegistry(), this.originTestClass);
+
+		TestClassLoader testClassLoader = resolveTestClassLoader(registry);
+		this.testClass = testClassLoader != null ? testClassLoader.loadTestClass(this.originTestClass)
+				: this.originTestClass;
 
 		// Register extensions from static fields here, at the class level but
 		// after extensions registered via @ExtendWith.
@@ -243,6 +249,28 @@ public abstract class ClassBasedTestDescriptor extends JupiterTestDescriptor {
 		if (previousThrowable != throwableCollector.getThrowable()) {
 			throwableCollector.assertEmpty();
 		}
+	}
+
+	private TestClassLoader resolveTestClassLoader(MutableExtensionRegistry registry) {
+		List<TestClassLoader> loaders = registry.getExtensions(TestClassLoader.class);
+
+		if (loaders.size() == 1) {
+			return loaders.get(0);
+		}
+
+		if (loaders.size() > 1) {
+			String factoryNames = loaders.stream()//
+					.map(factory -> factory.getClass().getName())//
+					.collect(joining(", "));
+
+			String errorMessage = String.format(
+				"The following TestClassLoader extensions were registered for test class [%s], but only one is permitted: %s",
+				testClass.getName(), factoryNames);
+
+			throw new ExtensionConfigurationException(errorMessage);
+		}
+
+		return null;
 	}
 
 	private TestInstanceFactory resolveTestInstanceFactory(ExtensionRegistry registry) {
