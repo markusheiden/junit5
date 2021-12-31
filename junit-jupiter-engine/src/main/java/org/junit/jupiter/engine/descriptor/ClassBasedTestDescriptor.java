@@ -149,9 +149,7 @@ public abstract class ClassBasedTestDescriptor extends JupiterTestDescriptor {
 		MutableExtensionRegistry registry = populateNewExtensionRegistryFromExtendWithAnnotation(
 			context.getExtensionRegistry(), this.originTestClass);
 
-		TestClassLoader testClassLoader = resolveTestClassLoader(registry);
-		this.testClass = testClassLoader != null ? testClassLoader.loadTestClass(this.originTestClass)
-				: this.originTestClass;
+		this.testClass = resolveTestClass(registry);
 
 		// Register extensions from static fields here, at the class level but
 		// after extensions registered via @ExtendWith.
@@ -249,6 +247,28 @@ public abstract class ClassBasedTestDescriptor extends JupiterTestDescriptor {
 		if (previousThrowable != throwableCollector.getThrowable()) {
 			throwableCollector.assertEmpty();
 		}
+	}
+
+	private Class<?> resolveTestClass(MutableExtensionRegistry registry) {
+		TestClassLoader loader = resolveTestClassLoader(registry);
+		if (loader == null) {
+			return this.originTestClass;
+		}
+
+		Class<?> testClass = loader.loadTestClass(this.originTestClass);
+		if (testClass == null) {
+			String message = String.format("TestClassLoader [%s] failed to load test class [%s]",
+				loader.getClass().getName(), this.originTestClass.getName());
+			throw new TestInstantiationException(message);
+		}
+
+		if (!testClass.getName().startsWith(this.originTestClass.getName())) {
+			String message = String.format("TestClassLoader [%s] failed to load test class [%s] with correct name",
+				loader.getClass().getName(), this.originTestClass.getName());
+			throw new TestInstantiationException(message);
+		}
+
+		return testClass;
 	}
 
 	private TestClassLoader resolveTestClassLoader(MutableExtensionRegistry registry) {
